@@ -289,10 +289,10 @@ class myBlock(nn.Module):
     def forward(self, x):
         #print('block input shape:', x.shape, 'attn shape:', self.attn(self.norm1(x)).shape)
         # drop x
-        x = self.drop_low_l2_norm(x, self.drop_ratio, True)
+        #x = self.drop_low_l2_norm(x, self.drop_ratio, True)
         #x = self.drop_high_l2_norm(x, self.drop_ratio)
         #x = self.drop_low_attn(x, self.drop_ratio, True, self.attn.qkv)
-        #x = self.random_drop_x(x, self.drop_ratio)
+        x = self.random_drop_x(x, self.drop_ratio)
         #print('drop x shape:', x.shape)
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
@@ -309,7 +309,7 @@ class MyVisionTransformer(VisionTransformer):
             if(idx==blk_num):
                 print('my block', idx)
                 self.blocks[idx] = myBlock(
-                dim=768, num_heads=12, mlp_ratio=4, qkv_bias=True,norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=0.1)
+                dim=768, num_heads=12, mlp_ratio=4, qkv_bias=True,norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=0.5)
                 #blk.attn = MyAttention(dim=192, num_heads=blk.attn.num_heads, qkv_bias=True)
 
 @register_model
@@ -330,7 +330,8 @@ def pxdeit_base_patch16_224(pretrained=False, **kwargs):
 def pxdeit_base_patch16_384(pretrained=False, **kwargs):
     model = MyVisionTransformer(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=7,  **kwargs)
+        #patch_size=16, embed_dim=768, depth=48, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=4,  **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
         checkpoint = torch.hub.load_state_dict_from_url(
@@ -339,4 +340,17 @@ def pxdeit_base_patch16_384(pretrained=False, **kwargs):
         )
         model.load_state_dict(checkpoint["model"])
     return model
-
+@register_model
+def pxdeit_base_patch16_448(pretrained=False, **kwargs):
+    model = MyVisionTransformer(
+        #img_size=448, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=4,**kwargs)
+    model.default_cfg = _cfg()
+    if pretrained:
+        checkpoint = torch.hub.load_state_dict_from_url(
+            url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_384-8de9b5d1.pth",
+            map_location="cpu", check_hash=True
+        )
+        model.load_state_dict(checkpoint["model"])
+    return model

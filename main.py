@@ -17,7 +17,7 @@ from timm.scheduler import create_scheduler
 from timm.optim import create_optimizer
 #from timm.utils import NativeScaler, get_state_dict, ModelEma
 from timm.utils import get_state_dict, ModelEma
-from acc.misc import NativeScalerWithGradNormCount as NativeScaler
+from acc.misc import NativeScalerWithGradNormCount as NativeScaler # Scalar with grad accum
 
 from datasets import build_dataset
 #from engine import train_one_epoch, evaluate
@@ -29,6 +29,8 @@ from augment import new_data_aug_generator
 
 import models
 import models_v2
+import model_prune
+import cait_models
 
 import utils
 
@@ -189,6 +191,11 @@ def get_args_parser():
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
     parser.add_argument('--dist_url', default='env://', help='url used to set up distributed training')
+
+    # prune
+    parser.add_argument('--prune', action='store_true', default=False, help='Enabling prune tesing ')
+    parser.add_argument('--prune384', action='store_true', default=False, help='Enabling prune 384 tesing ')
+    parser.add_argument('--prune448', action='store_true', default=False, help='Enabling prune 448(Cait) tesing ')
     return parser
 
 
@@ -263,10 +270,23 @@ def main(args):
             prob=args.mixup_prob, switch_prob=args.mixup_switch_prob, mode=args.mixup_mode,
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
+    if(args.prune):
+        args.model = 'pxdeit_base_patch16_224'
+        pretrained = False
+    if(args.prune384):
+        args.model = 'pxdeit_base_patch16_384'
+        pretrained = False
+    if(args.prune448):
+        #args.model = 'cait_M48'
+        #pretrained = True
+        args.model = 'pxdeit_base_patch16_448'
+        pretrained = False
+
     print(f"Creating model: {args.model}")
     model = create_model(
         args.model,
-        pretrained=False,
+        pretrained=pretrained, #(evaluation)
+        #pretrained=False, # finetune 448
         num_classes=args.nb_classes,
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
@@ -421,6 +441,9 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
+    if(args.prune):
+        args.epochs = args.start_epoch + 100 # reset, or it will be set as that saved in checkpoint, such as 285
+    print(args.start_epoch, args.epochs)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             data_loader_train.sampler.set_epoch(epoch)
