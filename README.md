@@ -260,6 +260,7 @@ python main.py --eval --input-size 384 --resume output/base/DeiT_base_patch16_38
 448 resolution
 '''
 python main.py --eval --input-size 448 --pretrained output/Cait448/Cait_448.pth --prune448
+python main.py --eval --input-size 448 --resume /home/wrl/deit/output/base448_tune30/best_checkpoint.pth --prune448
 '''
 ### Prune training
 
@@ -273,6 +274,15 @@ python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --prune 
 python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --prune --batch-size 256 --epochs 100 --finetune output/base/best_checkpoint.pth --lr 5e-6 --weight-decay 1e-8 -min-lr 5e-6
 '''
 
+Aug 10 night
+'''
+python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_base_patch16_448 --batch-size 32 --finetune /home/wrl/deit/output/base/best_checkpoint.pth --input-size 384 --lr 5e-6 --weight-decay 1e-8 --epochs 30 --min-lr 5e-6
+'''
+
+Aug 11
+'''
+python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_base_patch16_448 --batch-size 16 --finetune /home/wrl/deit/output/base/best_checkpoint.pth --input-size 448 --lr 5e-6 --weight-decay 1e-8 --epochs 30 --min-lr 5e-6
+'''
 # License
 This repository is released under the Apache 2.0 license as found in the [LICENSE](LICENSE) file.
 
