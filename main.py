@@ -196,6 +196,7 @@ def get_args_parser():
     parser.add_argument('--prune', action='store_true', default=False, help='Enabling prune tesing ')
     parser.add_argument('--prune384', action='store_true', default=False, help='Enabling prune 384 tesing ')
     parser.add_argument('--prune448', action='store_true', default=False, help='Enabling prune 448(Cait) tesing ')
+    parser.add_argument('--prune512', action='store_true', default=False, help='Enabling 512 finetune ')
     return parser
 
 
@@ -280,6 +281,9 @@ def main(args):
         #args.model = 'cait_M48'
         #pretrained = True
         args.model = 'pxdeit_base_patch16_448'
+        pretrained = False
+    if(args.prune512):
+        args.model = 'deit_base_patch16_512'
         pretrained = False
 
     print(f"Creating model: {args.model}")
