@@ -254,14 +254,14 @@ python run_with_submitit.py --model deit_base_patch16_384 --batch-size 32 --fine
 
 ### Prune Evaluation
 384 resolution
-'''
+```
 python main.py --eval --input-size 384 --resume output/base/DeiT_base_patch16_384.pth --prune384
-'''
+```
 448 resolution
-'''
+```
 python main.py --eval --input-size 448 --pretrained output/Cait448/Cait_448.pth --prune448
 python main.py --eval --input-size 448 --resume /home/wrl/deit/output/base448_tune30/best_checkpoint.pth --prune448
-'''
+```
 ### Prune training
 
 To train DeiT-base model on ImageNet on 2 nodes with 8 gpus each for 300 epochs:
@@ -275,14 +275,21 @@ python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --prune 
 '''
 
 Aug 10 night
-'''
+```
 python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_base_patch16_448 --batch-size 32 --finetune /home/wrl/deit/output/base/best_checkpoint.pth --input-size 384 --lr 5e-6 --weight-decay 1e-8 --epochs 30 --min-lr 5e-6
-'''
+```
 
 Aug 11
-'''
+```
 python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_base_patch16_448 --batch-size 16 --finetune /home/wrl/deit/output/base/best_checkpoint.pth --input-size 448 --lr 5e-6 --weight-decay 1e-8 --epochs 30 --min-lr 5e-6
+<<<<<<< HEAD
 '''
+
+python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_base_patch16_512 --batch-size 16 --finetune /home/wrl/deit/output/base/best_checkpoint.pth --input-size 512 --lr 5e-6 --weight-decay 1e-8 --epochs 30 --min-lr 5e-6 --prune512 (accu==16)
+16*16*4 =1024
+=======
+```
+>>>>>>> 5f79560cb85203e8ca02ce5488ee19d1f3a2116a
 # License
 This repository is released under the Apache 2.0 license as found in the [LICENSE](LICENSE) file.
 
