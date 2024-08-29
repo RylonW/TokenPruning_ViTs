@@ -283,6 +283,9 @@ Aug 11
 '''
 python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_base_patch16_448 --batch-size 16 --finetune /home/wrl/deit/output/base/best_checkpoint.pth --input-size 448 --lr 5e-6 --weight-decay 1e-8 --epochs 30 --min-lr 5e-6
 '''
+```
+python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_base_patch16_512 --batch-size 16 --finetune /home/wrl/deit/output/base/best_checkpoint.pth --input-size 512 --lr 5e-6 --weight-decay 1e-8 --epochs 30 --min-lr 5e-6 --prune512 (accu==16)
+```
 # License
 This repository is released under the Apache 2.0 license as found in the [LICENSE](LICENSE) file.
 
