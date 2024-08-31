@@ -9,7 +9,7 @@ from timm.models.vision_transformer import Mlp, PatchEmbed , _cfg
 from timm.models.registry import register_model
 from timm.models.layers import trunc_normal_, DropPath
 
-
+from torch import linalg as LA
 __all__ = [
     'cait_M48', 'cait_M36',
     'cait_S36', 'cait_S24','cait_S24_224',
@@ -148,6 +148,147 @@ class LayerScale_Block(nn.Module):
         x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
         return x 
     
+class Dropx_LayerScale_Block(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm,Attention_block = Attention_talking_head,
+                 Mlp_block=Mlp,init_values=1e-4, i=None, drop_ratio=0.1):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = Attention_block(
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp_block(in_features=dim, hidden_features=mlp_hidden_dim, act_layer=act_layer, drop=drop)
+        self.gamma_1 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
+        self.gamma_2 = nn.Parameter(init_values * torch.ones((dim)),requires_grad=True)
+        self.drop_ratio=drop_ratio
+    def drop_low_l2_norm(self, x, drop_percentage, scale):
+        """Calculates L2 norm along dim 1, drops lowest percentile, and reshapes.
+
+        Args:
+            x (torch.Tensor): Input tensor with shape [1, 197, 192].
+            drop_percentage (float): Percentage of elements to drop (default: 0.10).
+
+        Returns:
+            torch.Tensor: Output tensor with shape [1, num_remaining_elements, 192].
+        """
+        B, N, C = x.shape
+        #print(B,N,C)
+        # Calculate L2 norm along dimension 1
+        #print('patch 1:', x[0,1,:], x[0,1,:].shape)
+        l2_norms = LA.norm(x[:,1:,:], ord=2, dim=2) / C # Shape: [B, N-1] cls token should not be deleted
+        #print('l2_norm:', l2_norms.shape)
+
+        # Find the threshold for the bottom 10%
+        #threshold = torch.quantile(l2_norms, drop_percentage)
+        sort = torch.argsort(l2_norms, dim=1)
+        threshold = int((N-1) * (1-drop_percentage))
+        #print(sort)
+
+        # Create a mask to keep elements above the threshold
+        mask = sort < threshold  # Shape: [1, 192]
+        #print(mask.shape)
+        #print('mask:', mask, mask.shape)
+
+        # Expand the mask to match the shape of x
+        #expanded_mask = mask.unsqueeze(2).expand_as(x)  # Shape: [1, 197, 192]
+        #new_N = expanded_mask.shape[0]/B/C
+        #print(new_N)
+        expanded_mask = torch.repeat_interleave(mask, C, dim=1) #[B,N,C]
+
+        #print('expanded_mask', expanded_mask.shape, )
+        expanded_mask = expanded_mask.reshape(B, N-1, C)
+        cls_mask = torch.ones((B, 1, C), dtype=torch.bool).cuda() 
+        final_mask = torch.cat((cls_mask, expanded_mask), dim=1)
+        #print('final mask:', final_mask.shape)
+        #print('exp mask 0:', expanded_mask[:,0,:], expanded_mask[:,0,:].shape)        
+        
+        # Apply the expanded mask
+        remaining_elements = x[final_mask]  # Shape: [num_remaining, 192]
+        
+        #print('remaining:', remaining_elements.shape, remaining_elements.shape[0]/B/C)
+        new_N = int(remaining_elements.shape[0]/B/C)
+
+        # Adjust the mask to drop extra elements if necessary
+        #if actual_remaining_elements > num_remaining_elements:
+        #    remaining_elements = remaining_elements[:num_remaining_elements * 192]
+        output = remaining_elements.view(B, new_N, C)
+        merge = True
+        if(merge):
+            # Mereg
+            merge_mask = sort > threshold
+            expanded_merge_mask = torch.repeat_interleave(merge_mask, C, dim=1)
+            expanded_merge_mask = expanded_merge_mask.reshape(B, N-1, C)
+            merge_cls_mask = torch.zeros((B, 1, C), dtype=torch.bool).cuda()
+            merge_cls_mask = torch.cat((merge_cls_mask, expanded_merge_mask), dim=1)
+            merge_elements = x[merge_cls_mask] #[B, ~, C]
+            #print(merge_elements.shape)
+            merge_N = int(merge_elements.shape[0]/B/C)
+            merge_elements = merge_elements.view(B, merge_N, C)
+            merge_avg = False
+            if(merge_avg):
+                y = torch.mean(merge_elements, 1, True)
+            else:
+                y = torch.sum(merge_elements, 1, True)
+            output = torch.cat((output, y), dim=1)
+            #print(output.shape)
+        if(scale):          
+            output = output / (1 - drop_percentage)
+        #print(x.sum(), output.sum())
+        return output
+    def random_drop_x(self, x, drop_percentage):
+        B, N, C = x.shape
+        #print(B,N,C)
+        # Create the tensor
+        tensor = torch.ones((B, N-1), dtype=torch.bool).cuda()  # Initialize with True
+
+        # Vectorized random index selection
+        threshold = int((N-1) * drop_percentage)
+        random_indices = torch.rand(tensor.shape).argsort(dim=1)[:, :threshold].cuda()
+
+        # Vectorized setting to False
+        tensor.scatter_(1, random_indices, False)
+        #print(tensor[0,:])
+        mask = tensor
+
+        # Expand the mask to match the shape of x
+        #expanded_mask = mask.unsqueeze(2).expand_as(x)  # Shape: [1, 197, 192]
+        #new_N = expanded_mask.shape[0]/B/C
+        #print(new_N)
+        expanded_mask = torch.repeat_interleave(mask, C, dim=1) #[B,N,C]
+
+        #print('expanded_mask', expanded_mask.shape, )
+        expanded_mask = expanded_mask.reshape(B, N-1, C)
+        cls_mask = torch.ones((B, 1, C), dtype=torch.bool).cuda() 
+        final_mask = torch.cat((cls_mask, expanded_mask), dim=1)
+        #print('final mask:', final_mask.shape)
+        #print('exp mask 0:', expanded_mask[:,0,:], expanded_mask[:,0,:].shape)
+
+        # Apply the expanded mask
+        remaining_elements = x[final_mask]  # Shape: [num_remaining, 192]
+        #print('remaining:', remaining_elements.shape, remaining_elements.shape[0]/B/C)
+        new_N = int(remaining_elements.shape[0]/B/C)
+
+
+        # Adjust the mask to drop extra elements if necessary
+        #if actual_remaining_elements > num_remaining_elements:
+        #    remaining_elements = remaining_elements[:num_remaining_elements * 192]
+        output = remaining_elements.view(B, new_N, C)
+        l2_norms = LA.norm(output, ord=2, dim=2) / C # Shape: [B, 197]
+        #print('l2_norm:', l2_norms, l2_norms.shape)
+        #print('patch 1:', output[0,0,:], output[0,0,:].shape)
+
+        # Reshape to the desired output shape
+        #return remaining_elements.view(1, num_remaining_elements, 192)
+        
+        return output        
+    def forward(self, x):        
+        x = self.random_drop_x(x, self.drop_ratio)
+        #x = self.drop_low_l2_norm(x, self.drop_ratio, True)
+        x = x + self.drop_path(self.gamma_1 * self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
+        return x 
     
     
     
@@ -183,12 +324,18 @@ class cait_models(nn.Module):
         self.pos_drop = nn.Dropout(p=drop_rate)
 
         dpr = [drop_path_rate for i in range(depth)] 
-        self.blocks = nn.ModuleList([
+        blk_list = [
             block_layers(
                 dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
                 drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer,
                 act_layer=act_layer,Attention_block=Attention_block,Mlp_block=Mlp_block,init_values=init_scale)
-            for i in range(depth)])
+            for i in range(depth)]
+        print('drop', 0.1 , 'at', 6)
+        blk_list[6] = Dropx_LayerScale_Block(
+                dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias, qk_scale=qk_scale,
+                drop=drop_rate, attn_drop=attn_drop_rate, drop_path=dpr[6], norm_layer=norm_layer,
+                act_layer=act_layer,Attention_block=Attention_block,Mlp_block=Mlp_block,init_values=init_scale,drop_ratio=0.1)
+        self.blocks = nn.ModuleList(blk_list)
         
 
         self.blocks_token_only = nn.ModuleList([
@@ -459,17 +606,21 @@ def cait_M36(pretrained=False, **kwargs):
 @register_model
 def cait_M48(pretrained=False, **kwargs):
     model = cait_models(
-        img_size= 448 , patch_size=16, embed_dim=768, depth=48, num_heads=16, mlp_ratio=4, qkv_bias=True,
+        #img_size= 448 , 
+        patch_size=16, embed_dim=768, depth=48, num_heads=16, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6),
         init_scale=1e-6,
         depth_token_only=2,**kwargs)
     
     model.default_cfg = _cfg()
     if pretrained:
+        checkpoint = torch.load('output/Cait448/Cait_448.pth', map_location='cpu')
+        '''
         checkpoint = torch.hub.load_state_dict_from_url(
             url="https://dl.fbaipublicfiles.com/deit/M48_448.pth",
             map_location="cpu", check_hash=True
         )
+        '''
         checkpoint_no_module = {}
         for k in model.state_dict().keys():
             checkpoint_no_module[k] = checkpoint["model"]['module.'+k]
