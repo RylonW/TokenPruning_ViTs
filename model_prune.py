@@ -135,7 +135,7 @@ class myBlock(nn.Module):
         if(scale):          
             output = output / (1 - drop_percentage)
         #print(x.sum(), output.sum())
-        return output
+        return output, final_mask
 
     def drop_low_attn(self, x, drop_percentage, scale, qkv_layer):
         B, N, C = x.shape
@@ -168,7 +168,7 @@ class myBlock(nn.Module):
         output = remaining_elements.view(B, new_N, C)
         if(scale):          
             output = output / (1 - drop_percentage)
-        return output
+        return output, final_mask, l2_norms  
 
     def random_drop_x(self, x, drop_percentage):
         B, N, C = x.shape
@@ -215,7 +215,7 @@ class myBlock(nn.Module):
         # Reshape to the desired output shape
         #return remaining_elements.view(1, num_remaining_elements, 192)
         
-        return output    
+        return output, final_mask 
 
     def drop_high_l2_norm(self, x, drop_percentage):
         """Calculates L2 norm along dim 1, drops highest percentile, and reshapes.
@@ -268,36 +268,40 @@ class myBlock(nn.Module):
         #if actual_remaining_elements > num_remaining_elements:
         #    remaining_elements = remaining_elements[:num_remaining_elements * 192]
         output = remaining_elements.view(B, new_N, C)
-        return output
+        return output, final_mask
 
-    def draw(self,x, drop_x):
-        B,N,C = x.shape
-        #print(B,N,C, x[:,1:,:].mean(2, True).shape, x[:,1:,:].mean(2, True).view(B, 1,14,14).shape)
-        vis = x[:,1:,:].mean(2, True).view(B, 1,14,14)
-        vis -= vis.min()
-        vis /= vis.max()
-        vis = vis*255
-        #print(vis[0,:,:,:])
-        save_image(vis, 'output/vis/0.jpg')
-        plt.imsave('output/vis/0_1.jpg', vis[0,:,:,:].squeeze().cpu())
-
-        print(drop_x.shape)
-        #print(vis[0,:,:,:])
-        save_image(vis, 'output/vis/drop.jpg')
-        plt.imsave('output/vis/drop_1.jpg', vis[0,:,:,:].squeeze().cpu())
-        return 0
     def forward(self, x):
         #print('block input shape:', x.shape, 'attn shape:', self.attn(self.norm1(x)).shape)
         # drop x
-        #x = self.drop_low_l2_norm(x, self.drop_ratio, True)
-        #x = self.drop_high_l2_norm(x, self.drop_ratio)
-        #x = self.drop_low_attn(x, self.drop_ratio, True, self.attn.qkv)
-        x = self.random_drop_x(x, self.drop_ratio)
+        self.save_tmp(x)
+        return 0
+        #x, _ = self.drop_low_l2_norm(x, self.drop_ratio, True)
+        #x, _ = self.drop_high_l2_norm(x, self.drop_ratio)
+        #x, _, _ = self.drop_low_attn(x, self.drop_ratio, True, self.attn.qkv)
+        #x, _ = self.random_drop_x(x, self.drop_ratio)
         #print('drop x shape:', x.shape)
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
-
+    def save_tmp(self, x):
+        torch.save(x, '/home/ruilu/TokenPruning_ViTs/output/features/x.pt')
+        drop_low_l2_norm, drop_low_l2_norm_mask = self.drop_low_l2_norm(x, self.drop_ratio, True)
+        torch.save(drop_low_l2_norm, '/home/ruilu/TokenPruning_ViTs/output/features/drop5_lownorm.pt')
+        torch.save(drop_low_l2_norm_mask, '/home/ruilu/TokenPruning_ViTs/output/features/drop5_lownorm_mask.pt')
+        
+        drop_low_q, drop_low_q_mask, drop_low_q_l2 = self.drop_low_attn(x, self.drop_ratio, True, self.attn.qkv)
+        torch.save(drop_low_q, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_q.pt')
+        torch.save(drop_low_q_mask, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_q_mask.pt')
+        torch.save(drop_low_q_l2, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_q_l2.pt')
+        
+        drop_low_rand, drop_low_rand_mask = self.random_drop_x(x, self.drop_ratio)
+        torch.save(drop_low_rand, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_rand.pt')
+        torch.save(drop_low_rand_mask, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_rand_mask.pt')
+        
+        drop_high_l2_norm, drop_high_l2_norm_mask = self.drop_high_l2_norm(x, self.drop_ratio)
+        torch.save(drop_high_l2_norm, '/home/ruilu/TokenPruning_ViTs/output/features/drop5_highnorm.pt')
+        torch.save(drop_high_l2_norm_mask, '/home/ruilu/TokenPruning_ViTs/output/features/drop5_high_mask.pt')
+        return 0
 
 # Create the Vision Transformer model with the custom attention module
 class MyVisionTransformer(VisionTransformer):
@@ -309,7 +313,7 @@ class MyVisionTransformer(VisionTransformer):
             if(idx==blk_num):
                 print('my block', idx)
                 self.blocks[idx] = myBlock(
-                dim=768, num_heads=12, mlp_ratio=4, qkv_bias=True,norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=0.5)
+                dim=768, num_heads=12, mlp_ratio=4, qkv_bias=True,norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=0.7)
                 #blk.attn = MyAttention(dim=192, num_heads=blk.attn.num_heads, qkv_bias=True)
 
 @register_model
@@ -344,6 +348,20 @@ def pxdeit_base_patch16_384(pretrained=False, **kwargs):
 def pxdeit_base_patch16_448(pretrained=False, **kwargs):
     model = MyVisionTransformer(
         #img_size=448, 
+        patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=4,**kwargs)
+    model.default_cfg = _cfg()
+    if pretrained:
+        checkpoint = torch.hub.load_state_dict_from_url(
+            url="https://dl.fbaipublicfiles.com/deit/deit_base_patch16_384-8de9b5d1.pth",
+            map_location="cpu", check_hash=True
+        )
+        model.load_state_dict(checkpoint["model"])
+    return model
+@register_model
+def pxdeit_base_patch16_512(pretrained=False, **kwargs):
+    model = MyVisionTransformer(
+        #img_size=512, 
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=4,**kwargs)
     model.default_cfg = _cfg()
