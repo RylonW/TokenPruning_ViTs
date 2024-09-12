@@ -81,12 +81,14 @@ class myBlock(nn.Module):
 
         # Find the threshold for the bottom 10%
         #threshold = torch.quantile(l2_norms, drop_percentage)
-        sort = torch.argsort(l2_norms, dim=1)
-        threshold = int((N-1) * (1-drop_percentage))
+        sort = torch.argsort(torch.argsort(l2_norms, dim=1), dim=1)
+        #threshold = int((N-1) * (1-drop_percentage))
+        threshold = int((N-1) * drop_percentage)
         #print(sort)
 
         # Create a mask to keep elements above the threshold
-        mask = sort < threshold  # Shape: [1, 192]
+        #mask = sort < threshold  # Shape: [1, 192]
+        mask = sort > threshold
         #print(mask.shape)
         #print('mask:', mask, mask.shape)
 
@@ -143,23 +145,44 @@ class myBlock(nn.Module):
         #qkv = qkv_layer(self.norm1(x)).reshape(B, N, 3, num_heads, C // num_heads).permute(2, 0, 3, 1, 4)
         qkv = qkv_layer(x).reshape(B, N, 3, num_heads, C // num_heads).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2] #[B, num_head, N, 64]
-        # selct k / q/ v
-        tmp = k
-        tmp = torch.mean(tmp, 1) # average 12 heads
-        _,_,k_C = tmp.shape
+        attn = (q @ k.transpose(-2, -1))
+        cls_attn = attn #[B, 1025, 1025]
+        use_attn_mask =True
+        final_mask = None
+        l2_norms = None
+        if(use_attn_mask):
+            #print(cls_attn.shape)
+            mean_cls_attn = torch.mean(cls_attn, 1)
+            l2_norms = mean_cls_attn[:,0,1:]
+            sort = torch.argsort(torch.argsort(mean_cls_attn[:,0,1:], dim=1), dim=1)#larger value->larger num
+            threshold = int((N-1) * drop_percentage)
+            mask = sort > threshold  # Shape: [1, 192]
+            #print('mask shape:', mask.shape)
+            # Expand the mask to match the shape of x
+            expanded_mask = torch.repeat_interleave(mask, C, dim=1) #[B,N,C]
+            expanded_mask = expanded_mask.reshape(B, N-1, C)
+            cls_mask = torch.ones((B, 1, C), dtype=torch.bool).cuda() 
+            final_mask = torch.cat((cls_mask, expanded_mask), dim=1)     
+        else:
+            # selct k / q/ v
+            tmp = k
+            tmp = torch.mean(tmp, 1) # average 12 heads
+            _,_,k_C = tmp.shape
 
-        # qkv
-        l2_norms = LA.norm(tmp[:,1:,:], ord=2, dim=2) / k_C # Shape: [B, N-1] cls token should not be deleted
-        # Find the threshold for the bottom 10%
-        sort = torch.argsort(l2_norms, dim=1)
-        threshold = int((N-1) * (1-drop_percentage))
-        # Create a mask to keep elements above the threshold
-        mask = sort < threshold  # Shape: [1, 192]
-        # Expand the mask to match the shape of x
-        expanded_mask = torch.repeat_interleave(mask, C, dim=1) #[B,N,C]
-        expanded_mask = expanded_mask.reshape(B, N-1, C)
-        cls_mask = torch.ones((B, 1, C), dtype=torch.bool).cuda() 
-        final_mask = torch.cat((cls_mask, expanded_mask), dim=1)              
+            # qkv (Drop according to qkv)
+            l2_norms = LA.norm(tmp[:,1:,:], ord=2, dim=2) / k_C # Shape: [B, N-1] cls token should not be deleted
+            #l2_norms = self.median_filter_reshaped(l2_norms, 3)
+            
+            # Find the threshold for the bottom 10%
+            sort = torch.argsort(torch.argsort(l2_norms, dim=1), dim=1)
+            threshold = int((N-1) * drop_percentage)
+            # Create a mask to keep elements above the threshold
+            mask = sort > threshold  # Shape: [1, 192]
+            # Expand the mask to match the shape of x
+            expanded_mask = torch.repeat_interleave(mask, C, dim=1) #[B,N,C]
+            expanded_mask = expanded_mask.reshape(B, N-1, C)
+            cls_mask = torch.ones((B, 1, C), dtype=torch.bool).cuda() 
+            final_mask = torch.cat((cls_mask, expanded_mask), dim=1)              
         # Apply the expanded mask
         remaining_elements = x[final_mask]  # Shape: [num_remaining, 192]
         
@@ -168,17 +191,17 @@ class myBlock(nn.Module):
         output = remaining_elements.view(B, new_N, C)
         if(scale):          
             output = output / (1 - drop_percentage)
-        return output, final_mask, l2_norms  
+        return output, final_mask, l2_norms, cls_attn
 
     def random_drop_x(self, x, drop_percentage):
         B, N, C = x.shape
-        #print(B,N,C)
+
         # Create the tensor
         tensor = torch.ones((B, N-1), dtype=torch.bool).cuda()  # Initialize with True
 
         # Vectorized random index selection
         threshold = int((N-1) * drop_percentage)
-        random_indices = torch.rand(tensor.shape).argsort(dim=1)[:, :threshold].cuda()
+        random_indices = torch.argsort(torch.rand(tensor.shape).argsort(dim=1), dim=1)[:, :threshold].cuda()
 
         # Vectorized setting to False
         tensor.scatter_(1, random_indices, False)
@@ -236,12 +259,14 @@ class myBlock(nn.Module):
 
         # Find the threshold for the bottom 10%
         #threshold = torch.quantile(l2_norms, drop_percentage)
-        sort = torch.argsort(l2_norms, dim=1) # descend
-        threshold = int((N-1) * drop_percentage)
+        sort = torch.argsort(torch.argsort(l2_norms, dim=1), dim=1) # descend
+        #threshold = int((N-1) * drop_percentage)
+        threshold = int((N-1) * (1-drop_percentage))
         #print(sort)
 
         # Create a mask to keep elements above the threshold
-        mask = sort > threshold  # Shape: [1, 192]
+        #mask = sort > threshold
+        mask = sort < threshold  # Shape: [1, 192]
         #print(mask.shape)
         #print('mask:', mask, mask.shape)
 
@@ -273,31 +298,36 @@ class myBlock(nn.Module):
     def forward(self, x):
         #print('block input shape:', x.shape, 'attn shape:', self.attn(self.norm1(x)).shape)
         # drop x
-        self.save_tmp(x)
-        return 0
+        #self.save_tmp(x)
+        #return 0
         #x, _ = self.drop_low_l2_norm(x, self.drop_ratio, True)
         #x, _ = self.drop_high_l2_norm(x, self.drop_ratio)
-        #x, _, _ = self.drop_low_attn(x, self.drop_ratio, True, self.attn.qkv)
+        x, _, _, _ = self.drop_low_attn(x, self.drop_ratio, True, self.attn.qkv)
         #x, _ = self.random_drop_x(x, self.drop_ratio)
         #print('drop x shape:', x.shape)
         x = x + self.drop_path(self.attn(self.norm1(x)))
         x = x + self.drop_path(self.mlp(self.norm2(x)))
         return x
     def save_tmp(self, x):
+        # Low - L2 Norm
         torch.save(x, '/home/ruilu/TokenPruning_ViTs/output/features/x.pt')
         drop_low_l2_norm, drop_low_l2_norm_mask = self.drop_low_l2_norm(x, self.drop_ratio, True)
         torch.save(drop_low_l2_norm, '/home/ruilu/TokenPruning_ViTs/output/features/drop5_lownorm.pt')
         torch.save(drop_low_l2_norm_mask, '/home/ruilu/TokenPruning_ViTs/output/features/drop5_lownorm_mask.pt')
         
-        drop_low_q, drop_low_q_mask, drop_low_q_l2 = self.drop_low_attn(x, self.drop_ratio, True, self.attn.qkv)
+        # Low - Q/K
+        drop_low_q, drop_low_q_mask, drop_low_q_l2, cls_attn = self.drop_low_attn(x, self.drop_ratio, True, self.attn.qkv)
         torch.save(drop_low_q, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_q.pt')
         torch.save(drop_low_q_mask, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_q_mask.pt')
         torch.save(drop_low_q_l2, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_q_l2.pt')
+        torch.save(cls_attn, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_q_clsattn.pt')
         
+        # Low - Random
         drop_low_rand, drop_low_rand_mask = self.random_drop_x(x, self.drop_ratio)
         torch.save(drop_low_rand, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_rand.pt')
         torch.save(drop_low_rand_mask, '/home/ruilu/TokenPruning_ViTs/output/features/drop_low_rand_mask.pt')
         
+        # High - L2 Norm
         drop_high_l2_norm, drop_high_l2_norm_mask = self.drop_high_l2_norm(x, self.drop_ratio)
         torch.save(drop_high_l2_norm, '/home/ruilu/TokenPruning_ViTs/output/features/drop5_highnorm.pt')
         torch.save(drop_high_l2_norm_mask, '/home/ruilu/TokenPruning_ViTs/output/features/drop5_high_mask.pt')
@@ -305,7 +335,7 @@ class myBlock(nn.Module):
 
 # Create the Vision Transformer model with the custom attention module
 class MyVisionTransformer(VisionTransformer):
-    def __init__(self, blk_num, *args, **kwargs):
+    def __init__(self, blk_num, drop_ratio, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Replace the default Attention module with your custom one
         print('trash')
@@ -313,14 +343,14 @@ class MyVisionTransformer(VisionTransformer):
             if(idx==blk_num):
                 print('my block', idx)
                 self.blocks[idx] = myBlock(
-                dim=768, num_heads=12, mlp_ratio=4, qkv_bias=True,norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=0.7)
+                dim=768, num_heads=12, mlp_ratio=4, qkv_bias=True,norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=drop_ratio)
                 #blk.attn = MyAttention(dim=192, num_heads=blk.attn.num_heads, qkv_bias=True)
 
 @register_model
 def pxdeit_base_patch16_224(pretrained=False, **kwargs):
     model = MyVisionTransformer(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=1,  **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=7, drop_ratio=0.3, **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
         checkpoint = torch.hub.load_state_dict_from_url(
@@ -363,7 +393,7 @@ def pxdeit_base_patch16_512(pretrained=False, **kwargs):
     model = MyVisionTransformer(
         #img_size=512, 
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=4,**kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=7, drop_ratio=0.1, **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
         checkpoint = torch.hub.load_state_dict_from_url(
