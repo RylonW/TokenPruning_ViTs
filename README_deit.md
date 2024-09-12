@@ -291,6 +291,11 @@ python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model 
 python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model deit_base_patch16_512 --batch-size 16 --finetune /home/wrl/deit/output/base/best_checkpoint.pth --input-size 512 --lr 1e-5 --weight-decay 1e-7 --epochs 30 --min-lr 5e-6 --prune512 (accu==8)
 16*8*4 =512
 ```
+Sep 11
+4090 fail do not know why
+```
+python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --prune --batch-size 128(accu==2)
+```
 # License
 This repository is released under the Apache 2.0 license as found in the [LICENSE](LICENSE) file.
 
