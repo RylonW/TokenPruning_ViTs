@@ -262,6 +262,12 @@ python main.py --eval --input-size 384 --resume output/base/DeiT_base_patch16_38
 python main.py --eval --input-size 448 --pretrained output/Cait448/Cait_448.pth --prune448
 python main.py --eval --input-size 448 --resume /home/wrl/deit/output/base448_tune30/best_checkpoint.pth --prune448
 '''
+
+For DeiTiii
+Large 224
+``` 84.804(Original)
+python main.py --eval --model pxdeit_large_patch16_LS --resume /home/wrl/deit/output/large_224/deit_3_large_224_1k.pth --eval-crop-ratio 1.0 
+```
 ### Prune training
 
 To train DeiT-base model on ImageNet on 2 nodes with 8 gpus each for 300 epochs:
@@ -292,10 +298,7 @@ python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --model 
 16*8*4 =512
 ```
 Sep 11
-4090 fail do not know why
-```
 python -m torch.distributed.launch --nproc_per_node=4 --use_env main.py --prune --batch-size 128(accu==2)
-```
 # License
 This repository is released under the Apache 2.0 license as found in the [LICENSE](LICENSE) file.
 

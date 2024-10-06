@@ -30,7 +30,7 @@ from augment import new_data_aug_generator
 import models
 import models_v2
 import model_prune
-import cait_models
+import models_v2_prune
 
 import utils
 
@@ -272,7 +272,8 @@ def main(args):
             label_smoothing=args.smoothing, num_classes=args.nb_classes)
 
     if(args.prune):
-        args.model = 'pxdeit_base_patch16_224'
+        #args.model = 'pxdeit_base_patch16_224'
+        args.model = 'pxdeit_small_patch16_224'
         pretrained = False
     if(args.prune384):
         args.model = 'pxdeit_base_patch16_384'
@@ -285,12 +286,16 @@ def main(args):
     if(args.prune512):
         args.model = 'deit_base_patch16_512'
         pretrained = False
+        if(args.eval):
+            args.model = 'pxdeit_base_patch16_512'
 
     print(f"Creating model: {args.model}")
     model = create_model(
         args.model,
-        pretrained=pretrained, #(evaluation)
+        #pretrained=False,#(nodrop 224 eval)
+        #pretrained=pretrained, #(evaluation) prune series
         #pretrained=False, # finetune 448
+        pretrained=False, # large model v2
         num_classes=args.nb_classes,
         drop_rate=args.drop,
         drop_path_rate=args.drop_path,
@@ -372,6 +377,7 @@ def main(args):
     if args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.gpu])
         model_without_ddp = model.module
+        print('ddp model')
     n_parameters = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print('number of params:', n_parameters)
     if not args.unscale_lr:
@@ -445,8 +451,8 @@ def main(args):
     print(f"Start training for {args.epochs} epochs")
     start_time = time.time()
     max_accuracy = 0.0
-    if(args.prune):
-        args.epochs = args.start_epoch + 100 # reset, or it will be set as that saved in checkpoint, such as 285
+    #if(args.prune):
+    #    args.epochs = args.start_epoch + 100 # reset, or it will be set as that saved in checkpoint, such as 285
     print(args.start_epoch, args.epochs)
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
