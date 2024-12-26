@@ -51,7 +51,7 @@ class Attention(nn.Module):
 '''
     Customed Attention Class
 '''
-def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
+def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.5):
     """
     Randomly drops elements within each head of the input tensor to achieve a target shape.
 
@@ -63,21 +63,24 @@ def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
     """
 
     batch_size, num_heads, seq_len, hidden_dim = input_tensor.shape
+    #img = input_tensor[:,0,1:,0].reshape((batch_size, 1, 24, 24))+1
+    #save_image(img, '/root/deit_prune/output/vis/block_inp.jpg')
     # target_seq_len : The desired sequence length after dropping elements
-    print('drop rate:', drop_percentage)
     target_seq_len = seq_len - int((seq_len) * drop_percentage) # include the CLS token
     drop_seq_len = seq_len - target_seq_len
-    print('target_seq_len:', target_seq_len)
+    #print('attn drop rate:', drop_percentage, 'target_seq_len:', target_seq_len)
 
     # Calculate the mean value across the hidden dimension for each element in each head
-    mean_values = input_tensor.mean(dim=-1) #[Batch, Heads, Token_num])
+    mean_values = input_tensor.mean(dim=-1) #[Batch, Heads, Token_num])                           
 
     # Create a mask to indicate which elements to keep for each head
     low = False# drop low norm
-    mix = True
-    rand = False
+    mix = False
+    rand = True
     high = False
+    spatial_even = False
     even = False
+    thresh = False
     # hyper-param
     beta = 0
     norm_num = 1
@@ -93,20 +96,20 @@ def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
 
         # Sort along the sequence dimension, keeping track of the original indices
         sorted_tensor, indices = torch.sort(values, dim=1, descending=True)# value from big to small
-        print('low total indice shape:', indices.shape)
+        #print('low total indice shape:', indices.shape)
         
         # clip -> sort( previous sort -> clip)
         # Select the top 'output_seq_len' indices for each head and item
         original_indices = indices.clone()
         indices = indices[:, :target_seq_len-1]
         indices, _ = torch.sort(indices.cuda()) # 0->infinite          
-        print('low indices:', indices.shape)
+        #print('low indices:', indices.shape)
 
         # Gather the original values based on the selected indices
         output_tensor = torch.gather(reshaped_tensor, 1, indices.unsqueeze(-1).expand(-1, -1, hidden_dim))
         # Reshape back to the original format
         selected_tokens = output_tensor.reshape(batch_size, num_heads, target_seq_len-1, hidden_dim)
-        print('low select:', selected_tokens.shape)
+        #print('low select:', selected_tokens.shape)
         # Concatenate the first token with the selected tokens
         output_tensor = torch.cat([first_token, selected_tokens], dim=2)
 
@@ -193,12 +196,12 @@ def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
         v_remaining_tokens = v_tensor[:, :, 1:, :]
         v_selected_tokens = torch.gather(v_remaining_tokens, 2, indices.unsqueeze(-1).expand(-1, -1, -1, hidden_dim))
         v_output_tensor = torch.cat([v_first_token, v_selected_tokens], dim=2)
-    elif(even):
+    elif(spatial_even):
         '''
         # a better baseline compared to rand
         evenly drop is different from others
         '''
-        print('B', B, 'N', N, 'C', C)
+        #print('B', B, 'N', N, 'C', C)
         # Keep the first token
         first_token = input_tensor[:, :, 0:1, :]
 
@@ -227,7 +230,7 @@ def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
                 even_numbers = indices_tmp[indices_tmp % n != n-1]
             else:
                 even_numbers = indices_tmp[indices_tmp % n != n-2]# drop even
-            print(even_numbers)
+            #print(even_numbers)
             print(drop_percentage, len(even_numbers))
         target_seq_len = len(even_numbers) + 1
         # Repeat the tensor 960 times
@@ -245,6 +248,101 @@ def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
         # Concatenate the first token with the selected tokens
         output_tensor = torch.cat([first_token, selected_tokens], dim=2)
         print('even k shape:', output_tensor.shape)
+    elif(even):
+        # Keep the first token
+        first_token = input_tensor[:, :, 0:1, :]
+        # Apply dropping to the remaining tokens based on their values
+        remaining_tokens = input_tensor[:, :, 1:, :]
+        # Flatten along multi-heads
+        reshaped_tensor = remaining_tokens.reshape(batch_size * num_heads, seq_len-1, hidden_dim)
+        values = torch.norm(reshaped_tensor, p=norm_num, dim=2, keepdim=False)/hidden_dim
+        # Sort along the sequence dimension, keeping track of the original indices
+        sorted_tensor, indices = torch.sort(values, dim=1, descending=True)# value from big to small
+        if(drop_percentage == 0.5):
+            space = 2
+        if(drop_percentage >= 0.5):
+            space = int(1/(1-drop_percentage))
+            even_numbers = torch.arange(0, seq_len-1, space)
+        else:
+            n = int(1/drop_percentage) 
+            indices_tmp = torch.arange(0, seq_len-1)
+            even_numbers = indices_tmp[indices_tmp % n != n-1]
+
+        total_numbers = even_numbers.repeat(batch_size * num_heads, 1).cuda()   
+        # indices after down-sampled
+        indices = torch.gather(indices, 1, total_numbers)
+        indices, _ = torch.sort(indices.cuda())
+        # Gather the original values based on the selected indices
+        output_tensor = torch.gather(reshaped_tensor, 1, indices.unsqueeze(-1).expand(-1, -1, hidden_dim))
+
+        # Reshape back to the original format
+        selected_tokens = output_tensor.reshape(batch_size, num_heads, target_seq_len - 1, hidden_dim)
+        #print('even select:', selected_tokens.shape)
+
+        # Concatenate the first token with the selected tokens
+        output_tensor = torch.cat([first_token, selected_tokens], dim=2)
+        #print('even k shape:', output_tensor.shape)  
+        #return 0
+    elif(thresh):
+        thresh = 0.2
+        # Keep the first token
+        first_token = input_tensor[:, :, 0:1, :]
+        # Apply dropping to the remaining tokens based on their values
+        remaining_tokens = input_tensor[:, :, 1:, :]
+        # Flatten along multi-heads
+        reshaped_tensor = remaining_tokens.reshape(batch_size * num_heads, seq_len-1, hidden_dim)
+        values = torch.norm(reshaped_tensor, p=norm_num, dim=2, keepdim=False)/hidden_dim
+
+        # Sort along the sequence dimension, keeping track of the original indices
+        sorted_tensor, indices = torch.sort(values, dim=1, descending=True)# value from big to small
+        print('thresh total indice shape:', indices.shape)
+
+        new_start = int((seq_len - 1)*thresh)
+        new_seq_len = seq_len - 1 - new_start
+        persudo_ratio = drop_seq_len / new_seq_len
+        print('persudo  ratio:', persudo_ratio, 'new start', new_start)
+        if(persudo_ratio>1):
+            print('drop num > left num')
+            return 0
+        print(new_start,  new_seq_len, drop_seq_len)
+        if(persudo_ratio<0.5):
+            n = int(new_seq_len/drop_seq_len) 
+            print('every', n, 'drop 1')
+            indices_tmp = torch.arange(new_start, seq_len-1)
+            even_numbers = torch.cat((torch.arange(0, new_start), indices_tmp[(indices_tmp-new_start)% n != n-1]))
+
+        else:
+            print('bigger than 0.5')
+            n = max(2, int(1/(1-persudo_ratio)))
+            print('every', n, 'save 1')
+            indices_tmp = torch.arange(new_start, seq_len-1)
+            even_numbers = torch.cat((torch.arange(0, new_start), indices_tmp[(indices_tmp-new_start)% n == n-1]))
+        
+        print(len(even_numbers))
+        total_numbers = even_numbers.repeat(batch_size * num_heads, 1).cuda()
+        #print('before:', indices[0])    
+        # indices after down-sampled
+        indices = torch.gather(indices, 1, total_numbers)
+        indices, _ = torch.sort(indices.cuda())
+
+        #print('after:', indices[0])
+        # Gather the original values based on the selected indices
+        output_tensor = torch.gather(reshaped_tensor, 1, indices.unsqueeze(-1).expand(-1, -1, hidden_dim))
+
+        # Reshape back to the original format
+        print('output shape:', output_tensor.shape)
+        new_target_len = output_tensor.shape[1] 
+        print('new tar:', new_target_len)
+        #selected_tokens = output_tensor.reshape(batch_size, num_heads, target_seq_len - 1, hidden_dim)
+        selected_tokens = output_tensor.reshape(batch_size, num_heads, new_target_len, hidden_dim)
+        print('even select:', selected_tokens.shape)
+
+        # Concatenate the first token with the selected tokens
+        output_tensor = torch.cat([first_token, selected_tokens], dim=2)
+        print('even k shape:', output_tensor.shape)  
+        
+        #return 0
+      
     else:# Rand in bacth. This is wrong, use rand in sample instead.
         keep_indices = [
         torch.cat((torch.tensor([0]), 
@@ -258,7 +356,7 @@ def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
         ], dim=1)
 
     # V
-    if(high or low or mix or even):
+    if(high or low or mix or spatial_even or even):
         # process v
         # Keep the first token
         v_first_token = v_tensor[:, :, 0:1, :]
@@ -272,10 +370,10 @@ def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
             v_selected_tokens = v_output_tensor.reshape(batch_size, num_heads, selected_seq_len, hidden_dim)
         else:
             v_selected_tokens = v_output_tensor.reshape(batch_size, num_heads, target_seq_len-1, hidden_dim)
-        print('v select:', selected_tokens.shape, indices.shape, v_reshaped_tensor.shape)
+        #print('v select:', selected_tokens.shape, indices.shape, v_reshaped_tensor.shape)
 
         # Concatenate the first token with the selected tokens
-        print(first_token.device, selected_tokens.device)
+        #print(first_token.device, selected_tokens.device)
         v_output_tensor = torch.cat([v_first_token, v_selected_tokens], dim=2)
         
         
@@ -298,11 +396,26 @@ def random_drop_elements(input_tensor, v_tensor, drop_percentage = 0.75):
             print('comps_v shape:', comps_v.shape)
 
             return output_tensor, v_output_tensor, comps_v
+    elif(thresh):
+        # process v
+        # Keep the first token
+        v_first_token = v_tensor[:, :, 0:1, :]
+        # Apply dropping to the remaining tokens based on their values
+        v_remaining_tokens = v_tensor[:, :, 1:, :]
+        v_reshaped_tensor = v_remaining_tokens.reshape(batch_size * num_heads, seq_len-1, hidden_dim)
+        # Gather the original values based on the selected indices
+        v_output_tensor = torch.gather(v_reshaped_tensor, 1, indices.unsqueeze(-1).expand(-1, -1, hidden_dim))
+        # Reshape back to the original format
+        v_selected_tokens = v_output_tensor.reshape(batch_size, num_heads,  new_target_len, hidden_dim)
+        print('v select:', selected_tokens.shape, indices.shape, v_reshaped_tensor.shape)
+
+        # Concatenate the first token with the selected tokens
+        v_output_tensor = torch.cat([v_first_token, v_selected_tokens], dim=2)        
 
     return output_tensor, v_output_tensor
 
 class myAttention(nn.Module):
-    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0.):
+    def __init__(self, dim, num_heads=8, qkv_bias=False, qk_scale=None, attn_drop=0., proj_drop=0., drop_ratio=0.):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
@@ -312,6 +425,7 @@ class myAttention(nn.Module):
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
+        self.drop_ratio = drop_ratio
 
     def forward(self, x):
         B, N, C = x.shape
@@ -320,28 +434,32 @@ class myAttention(nn.Module):
 
         compensation = False
         if(compensation):
-            new_k, new_v, comps_v = random_drop_elements(k, v)
+            new_k, new_v, comps_v = random_drop_elements(k, v, drop)
         else:
-            new_k, new_v = random_drop_elements(k, v)
-        print('k:', new_k.shape)
-        #return 0
-        #new_v = random_drop_elements(v)
+            test_throuput = False
+            if(test_throuput):
+                exp_N = int(N*(1-0.))
+                new_k, new_v = k[:,:,:exp_N], v[:,:,:exp_N]
+                print('new_k len:', new_k.shape)
+            else:
+                new_k, new_v = random_drop_elements(k, v, self.drop_ratio)
 
-
-        attn = (q @ new_k.transpose(-2, -1)) * self.scale
+        attn = (q @ new_k.transpose(-2, -1)) * self.scale 
+        #real_attn = ((q @ k.transpose(-2, -1)) * self.scale).softmax(dim=-1)
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
-        #x = (attn @ new_v).transpose(1, 2).reshape(B, N, C)
         #compensation = True
         if(compensation):
             v = comps_v
             beta = -1e-4
             x = (attn @ new_v) + beta*v
-            print('mean', x.mean(), v.mean())
+            #print('mean', x.mean(), v.mean())
             x = x.transpose(1, 2).reshape(B, N, C)
         else:
             x = (attn @ new_v).transpose(1, 2).reshape(B, N, C)
+            #real_x = (real_attn @ v).transpose(1, 2).reshape(B, N, C)
+        #print(x.mean().item(), real_x.mean().item(), 'proj_inp_mean:', (x-real_x).mean().item())
         x = self.proj(x)
         x = self.proj_drop(x)
         return x
@@ -353,13 +471,14 @@ class myAttention(nn.Module):
 class myBlock(nn.Module):
 
     def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False, qk_scale=None, drop=0., attn_drop=0.,
-                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, drop_ratio=0.01):
+                 drop_path=0., act_layer=nn.GELU, norm_layer=nn.LayerNorm, drop_ratio=0.):
         super().__init__()
         self.norm1 = norm_layer(dim)
         change_attn = True
+        print('using customed attn')
         if(change_attn):
             self.attn = myAttention(
-            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
+            dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop, drop_ratio=drop_ratio )
         else:
             self.attn = Attention(
             dim, num_heads=num_heads, qkv_bias=qkv_bias, qk_scale=qk_scale, attn_drop=attn_drop, proj_drop=drop)
@@ -649,13 +768,25 @@ class MyVisionTransformer(VisionTransformer):
     def __init__(self, blk_num, drop_ratio, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Replace the default Attention module with your custom one
-        print('trash', args, kwargs)
+        print('prune mode', args, kwargs)
+        drop_ratio_list = [i/13/5 for i in range(1,13)]
+        print(drop_ratio_list)
         for idx, blk in enumerate(self.blocks):
-            if(idx==blk_num):
-                print('my block', idx)
+            # drop the same amount in the each blk
+            if(blk_num==-1): 
+                print('my block', idx, 'using my customed blk')
                 self.blocks[idx] = myBlock(
                 #dim=768, num_heads=12, mlp_ratio=4, qkv_bias=True,norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=drop_ratio)
                 dim=kwargs['embed_dim'], num_heads=kwargs['num_heads'], mlp_ratio=4, qkv_bias=True,norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=drop_ratio)
+            else:
+                self.blocks[idx] = myBlock(
+                dim=kwargs['embed_dim'], 
+                num_heads=kwargs['num_heads'], 
+                mlp_ratio=4, 
+                qkv_bias=True, 
+                norm_layer=partial(nn.LayerNorm, eps=1e-6), 
+                drop_ratio=drop_ratio_list[idx])
+
 
 
 @register_model
@@ -675,7 +806,7 @@ def pxdeit_small_patch16_224(pretrained=False, **kwargs):
 def pxdeit_base_patch16_224(pretrained=False, **kwargs):
     model = MyVisionTransformer(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=7, drop_ratio=0.3, **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), blk_num=-1, drop_ratio=0.5, **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
         checkpoint = torch.hub.load_state_dict_from_url(
@@ -690,7 +821,7 @@ def pxdeit_base_patch16_384(pretrained=False, **kwargs):
     model = MyVisionTransformer(
         patch_size=16, embed_dim=768, depth=12, num_heads=12, mlp_ratio=4, qkv_bias=True,
         #patch_size=16, embed_dim=768, depth=48, num_heads=12, mlp_ratio=4, qkv_bias=True,
-        norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=0.,  blk_num=4,  **kwargs)
+        norm_layer=partial(nn.LayerNorm, eps=1e-6), drop_ratio=0.5,  blk_num=-1,  **kwargs)
     model.default_cfg = _cfg()
     if pretrained:
         checkpoint = torch.hub.load_state_dict_from_url(
